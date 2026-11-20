@@ -257,7 +257,13 @@ fn init(#[cfg(not(feature = "o3ds"))] nwm_bufs: &NwmBufs) -> Option<Init> {
         let qos = RP_CONFIG.qos().load(Ordering::Acquire);
         entries::thread_nwm::init(dst_flags, qos)?;
 
-        let mode = RP_CONFIG.mode().load(Ordering::Acquire);
+        #[allow(unused_mut)]
+        let mut mode = RP_CONFIG.mode().load(Ordering::Acquire);
+        // o3ds-rec: record the top screen only
+        #[cfg(all(feature = "o3ds", not(feature = "mem3")))]
+        if RP_CONFIG_SAVED.recordSd == 1 {
+            mode = 0x0100;
+        }
         let full_width = RP_CONFIG.full_width().load(Ordering::Acquire);
         entries::thread_screen::init(mode, full_width);
 
@@ -439,6 +445,11 @@ fn main(_impl_: Impl, #[cfg(not(feature = "o3ds"))] s: &mut ThreadsStorage) -> O
                 entries::work_thread::work_thread_loop(t);
             }
             set_reset_threads();
+            // o3ds-rec: finish the file when recording stops or settings change
+            #[cfg(all(feature = "o3ds", not(feature = "mem3")))]
+            unsafe {
+                entries::thread_screen::o3dsrecStop();
+            }
         }
     }
 

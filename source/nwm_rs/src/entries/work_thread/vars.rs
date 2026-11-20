@@ -1186,6 +1186,22 @@ pub unsafe fn work_thread_loop(t: ThreadIndex) -> Option<()> {
                 encoder::jpeg_update_quality(rp_config.quality);
             }
         }
+        // o3ds-rec: 1 = record to SD, 2 = paused (neither record nor stream)
+        #[cfg(all(feature = "o3ds", not(feature = "mem3")))]
+        match unsafe { RP_CONFIG_SAVED.recordSd } {
+            0 => {}
+            1 => {
+                entries::thread_screen::record_frame()?;
+                continue;
+            }
+            _ => {
+                if reset_threads() {
+                    return None;
+                }
+                sleep_thread(THREAD_WAIT_NS);
+                continue;
+            }
+        }
         safe_impl::send_frame(Impl { w: work_index, t })?;
         work_index.next_wrapped();
     }

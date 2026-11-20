@@ -683,6 +683,55 @@ pub fn try_capture_screen(is_top: bool, screen_info: &ScreenInfo) -> bool {
     }
 }
 
+#[cfg(all(feature = "o3ds", not(feature = "mem3")))]
+unsafe extern "C" {
+    fn o3dsrecFrame(src: *const u8, format: u32, is_top: u32);
+    pub fn o3dsrecStop();
+}
+
+#[cfg(all(feature = "o3ds", not(feature = "mem3")))]
+static mut RECORD_LAST_TICK: u64 = 0;
+
+/// o3ds-rec: capture one frame and hand it to the SD recorder (source/nwm/o3dsrec.c)
+/// instead of encoding and sending it.
+#[cfg(all(feature = "o3ds", not(feature = "mem3")))]
+pub fn record_frame() -> Option<()> {
+    unsafe {
+        // Pace captures to the 60 Hz display; unchanged frames cost only a hash pass.
+        let period = SYSCLOCK_ARM11 as u64 / 60;
+        let elapsed = svcGetSystemTick().wrapping_sub(RECORD_LAST_TICK);
+        if RECORD_LAST_TICK != 0 && elapsed < period {
+            svcSleepThread(((period - elapsed) * 1_000_000_000 / SYSCLOCK_ARM11 as u64) as i64);
+        }
+        RECORD_LAST_TICK = svcGetSystemTick();
+    }
+
+    thread_ready_acquire()?;
+
+    unsafe {
+        // The capture is a DMA into IMG_INFO; wait for it before reading the buffer.
+        let dma = *SCREEN_PARAMS.dmas.get_unchecked(EYE_LEFT).get(&WorkIndex::init(0));
+        if dma != 0 {
+            let mut tries = 0;
+            loop {
+                // DmaState is a u8-sized enum; read it through a zeroed u32.
+                let mut state: u32 = 0;
+                let res = svcGetDmaState(&mut state as *mut u32 as *mut _, dma);
+                // 4 = DMASTATE_DONE
+                if res != 0 || (state & 0xff) == 4 || tries >= 100 {
+                    break;
+                }
+                tries += 1;
+                svcSleepThread(200_000);
+            }
+        }
+
+        let params = work_ready_params(&WorkIndex::init(0));
+        o3dsrecFrame(img_info(), params.format & 0xf, params.is_top as u32);
+    }
+    Some(())
+}
+
 #[cfg(feature = "o3ds")]
 pub unsafe fn img_info() -> *mut u8 {
     unsafe { IMG_INFO }

@@ -25,6 +25,7 @@ typedef struct {
 	RP_SCREEN_CONFIG screens[RP_SCREEN_COUNT];
 	u32 audioEnable; // NTR-HR+: stream game audio (0 = off, stock behavior)
 	u32 fullWidth;
+	u32 recordSd; // o3ds-rec: Old 3DS records the top screen to SD instead of streaming (0 = off)
 } RP_CONFIG;
 
 #define RP_CONFIG_ADV_CFG(config) ((void *)&(config)->coreCount)

@@ -939,7 +939,14 @@ int remotePlayMenu(u32 localaddr) {
 				config.fullWidth >= 2 ? "Both/Full" :
 				config.fullWidth == 1 ? "Right" : "Left");
 
-		const u32 rp_o3ds_off = 2;
+		/* Old 3DS: Audio Capture / Top View are hidden; o3ds-rec's SD recording takes the Audio slot */
+		const u32 rp_o3ds_off = 1;
+
+		char recordCaption[LOCAL_OPT_TEXT_BUF_SIZE];
+		if (!isNew3DS)
+			xsnprintf(recordCaption, LOCAL_OPT_TEXT_BUF_SIZE, "SD Recording: %s",
+				config.recordSd >= 2 ? "Paused" :
+				config.recordSd == 1 ? "On" : "Off (Wi-Fi streaming)");
 		u32 rp_menu_adv = isNew3DS ? REMOTE_PLAY_MENU_ADV : REMOTE_PLAY_MENU_ADV - rp_o3ds_off;
 		u32 rp_menu_apply = isNew3DS ? REMOTE_PLAY_MENU_APPLY : REMOTE_PLAY_MENU_APPLY - rp_o3ds_off;
 
@@ -951,7 +958,7 @@ int remotePlayMenu(u32 localaddr) {
 		captions[REMOTE_PLAY_MENU_VIEWER_IP] = dstAddrCaption;
 		captions[REMOTE_PLAY_MENU_VIEWER_PORT] = dstPortCaption;
 		captions[REMOTE_PLAY_MENU_COMP_FMT_PROT] = compFmtProtCaption;
-		captions[REMOTE_PLAY_MENU_AUDIO] = audioCaption;
+		captions[REMOTE_PLAY_MENU_AUDIO] = isNew3DS ? audioCaption : recordCaption;
 		captions[REMOTE_PLAY_MENU_TOP_VIEW] = topViewCaption;
 		captions[rp_menu_adv] = "Advanced Options";
 		captions[rp_menu_apply] = "Apply";
@@ -959,6 +966,8 @@ int remotePlayMenu(u32 localaddr) {
 		const char *descs[REMOTE_PLAY_MENU_COUNT] = { 0 };
 		descs[REMOTE_PLAY_MENU_PRIORITY_FACTOR] = "0: Priority screen only.";
 		descs[REMOTE_PLAY_MENU_COMP_FMT_PROT] = getCompFmtProtDesc(compFmt, compProt);
+		if (!isNew3DS)
+			descs[REMOTE_PLAY_MENU_AUDIO] = "o3ds-rec: record top screen to SD:/o3ds-rec/";
 
 		const u8 (*colors[REMOTE_PLAY_MENU_COUNT])[3] = { 0 };
 		colors[REMOTE_PLAY_MENU_PRIORITY_SCREEN] = !!(config.mode & 0xff00) != !!(rpConfig->mode & 0xff00) ? &changed_color : 0;
@@ -975,7 +984,7 @@ int remotePlayMenu(u32 localaddr) {
 		colors[REMOTE_PLAY_MENU_QOS] = config.qos != rpConfig->qos ? &changed_color : 0;
 		colors[REMOTE_PLAY_MENU_VIEWER_IP] = config.dstAddr != rpConfig->dstAddr ? &changed_color : 0;
 		colors[REMOTE_PLAY_MENU_VIEWER_PORT] = (config.dstPort & RP_CONFIG_PORT_MASK) != (rpConfig->dstPort & RP_CONFIG_PORT_MASK) ? &changed_color : 0;
-		colors[REMOTE_PLAY_MENU_AUDIO] = config.audioEnable != rpConfig->audioEnable ? &changed_color : 0;
+		colors[REMOTE_PLAY_MENU_AUDIO] = (isNew3DS ? config.audioEnable != rpConfig->audioEnable : config.recordSd != rpConfig->recordSd) ? &changed_color : 0;
 		colors[REMOTE_PLAY_MENU_TOP_VIEW] = config.fullWidth != rpConfig->fullWidth ? &changed_color : 0;
 		colors[REMOTE_PLAY_MENU_COMP_FMT_PROT] = (config.dstPort & RP_CONFIG_FLAGS) != (rpConfig->dstPort & RP_CONFIG_FLAGS) ? &changed_color : 0;
 		colors[rp_menu_adv] = memcmp(RP_CONFIG_ADV_CFG(&config), RP_CONFIG_ADV_CFG(rpConfig), RP_CONFIG_ADV_CFG_SIZE) != 0 ? &changed_color : 0;
@@ -1150,10 +1159,22 @@ int remotePlayMenu(u32 localaddr) {
 				break;
 			}
 
-			case REMOTE_PLAY_MENU_AUDIO: { /* audio */
-				_Static_assert(REMOTE_PLAY_MENU_AUDIO == REMOTE_PLAY_MENU_ADV - rp_o3ds_off);
-				if (!isNew3DS)
-					goto menu_adv;
+			case REMOTE_PLAY_MENU_AUDIO: { /* audio (New 3DS) / o3ds-rec SD recording (Old 3DS) */
+				if (!isNew3DS) {
+					int recordSd = config.recordSd;
+					if (keys == KEY_X) {
+						recordSd = rpConfig->recordSd;
+					} else {
+						menu_adjust_value_with_key(&recordSd, keys, 1, 1);
+					}
+
+					recordSd = CLAMP(recordSd, 0, 2);
+
+					if (recordSd != (int)config.recordSd) {
+						config.recordSd = recordSd;
+					}
+					break;
+				}
 
 				int audioEnable = config.audioEnable;
 				if (keys == KEY_X) {
@@ -1170,10 +1191,11 @@ int remotePlayMenu(u32 localaddr) {
 				break;
 			}
 
-			case REMOTE_PLAY_MENU_TOP_VIEW: { /* audio */
-				_Static_assert(REMOTE_PLAY_MENU_TOP_VIEW == REMOTE_PLAY_MENU_APPLY - rp_o3ds_off);
+			case REMOTE_PLAY_MENU_TOP_VIEW: { /* top view */
+				/* Old 3DS: this slot is "Advanced Options" */
+				_Static_assert(REMOTE_PLAY_MENU_TOP_VIEW + 1 == REMOTE_PLAY_MENU_ADV, "menu layout");
 				if (!isNew3DS)
-					goto menu_apply;
+					goto menu_adv;
 
 				int fullWidth = config.fullWidth;
 				if (keys == KEY_X) {
@@ -1217,10 +1239,15 @@ int remotePlayMenu(u32 localaddr) {
 				break;
 			}
 
-menu_adv:
-			case REMOTE_PLAY_MENU_ADV: if (keys == KEY_A) { /* advanced */
-				remotePlayAdvMenu(&config);
+			case REMOTE_PLAY_MENU_ADV: { /* advanced (Old 3DS: this slot is "Apply") */
+				_Static_assert(REMOTE_PLAY_MENU_ADV + 1 == REMOTE_PLAY_MENU_APPLY, "menu layout");
+				if (!isNew3DS)
+					goto menu_apply;
 			}
+menu_adv:
+				if (keys == KEY_A) {
+					remotePlayAdvMenu(&config);
+				}
 				break;
 
 menu_apply:

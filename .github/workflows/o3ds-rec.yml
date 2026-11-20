@@ -34,7 +34,7 @@ jobs:
       - name: Collect
         run: |
           mkdir dist
-          cp BootNTR-Bins/output/3ds-arm/*.3dsx dist/BootNTRSelector-o3ds-rec.3dsx
+          cp BootNTR-Bins/output/3ds-arm/3ds/BootNTRSelector-PabloMK7-Banner/BootNTRSelector-PabloMK7-Banner.3dsx dist/BootNTRSelector-o3ds-rec.3dsx
           cp BootNTR-Bins/output/3ds-arm/BootNTRSelector-PabloMK7-Banner.cia dist/BootNTRSelector-o3ds-rec.cia
           ls -la dist
       - uses: actions/upload-artifact@v4
