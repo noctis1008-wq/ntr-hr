@@ -21,6 +21,7 @@
 #include "o3dsrec.h"
 #include "rec_core.h"
 
+#include <stdarg.h>
 #include <string.h>
 
 #define REC_DIR "/o3ds-rec"
@@ -45,6 +46,8 @@ static bool sdmcOpened;
 
 /* ---- 録画1回ぶんの状態 ---- */
 static bool active;
+static u32 lastFormat;
+static u32 logFrames; /* 次に状況をログに出すフレーム数 */
 static bool startFailed; /* 開始に失敗したら o3dsrecStop() まで再試行しない */
 static rec_screen_state stTop, stBot;
 static u64 hashTop[TOP_LINES], hashBot[BOT_LINES];
@@ -68,6 +71,33 @@ static char baseName[64];
 
 static u32 loadAcq(u32 *p) { return __atomic_load_n(p, __ATOMIC_ACQUIRE); }
 static void storeRel(u32 *p, u32 v) { __atomic_store_n(p, v, __ATOMIC_RELEASE); }
+
+/* 診断ログ sdmc:/o3ds-rec/log.txt（どこで止まったかを実機で調べるため） */
+static void recLog(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+static void recLog(const char *fmt, ...)
+{
+	if (!sdmcOpened)
+		return;
+	char buf[160];
+	va_list ap;
+	va_start(ap, fmt);
+	u32 t = (u32)(svcGetSystemTick() / (SYSCLOCK_ARM11 / 1000));
+	int n = xsnprintf(buf, sizeof(buf), "[%lu] ", (unsigned long)t);
+	n += xvsnprintf(buf + n, sizeof(buf) - n, fmt, ap);
+	va_end(ap);
+	if (n > (int)sizeof(buf) - 2)
+		n = sizeof(buf) - 2;
+	buf[n++] = '\n';
+
+	Handle f;
+	if (FSUSER_OpenFile(&f, sdmc, fsMakePath(PATH_ASCII, REC_DIR "/log.txt"), FS_OPEN_WRITE | FS_OPEN_CREATE, 0) != 0)
+		return;
+	u64 size = 0;
+	FSFILE_GetSize(f, &size);
+	u32 w;
+	FSFILE_Write(f, &w, size, buf, n, FS_WRITE_FLUSH);
+	FSFILE_Close(f);
+}
 
 /* ---- 日付（osGetTime は 1900-01-01 からのミリ秒） ---- */
 static void civilFromDays(s32 z, s32 *y, u32 *m, u32 *d)
@@ -218,7 +248,7 @@ static bool ensureMemory(void)
 	if (ring)
 		return true;
 	/* 旧3DSの nwm は空きメモリが少ないので、取れる大きさで妥協する */
-	static const u32 sizes[] = { 1024 * 1024, 512 * 1024, 256 * 1024 };
+	static const u32 sizes[] = { 512 * 1024, 256 * 1024 };
 	for (unsigned i = 0; i < sizeof(sizes) / sizeof(*sizes); ++i) {
 		u8 *m = (u8 *)plgRequestMemory(sizes[i] + FRAME_MAX);
 		if (m) {
@@ -229,14 +259,18 @@ static bool ensureMemory(void)
 	}
 	if (!ring) {
 		nsDbgPrint("o3ds-rec: out of memory\n");
+		recLog("ERROR out of memory (ring)");
 		return false;
 	}
 	writerStack = (u32 *)plgRequestMemory(WRITER_STACK_SIZE);
 	if (!writerStack) {
 		nsDbgPrint("o3ds-rec: out of memory (stack)\n");
+		recLog("ERROR out of memory (stack)");
 		return false;
 	}
 	nsDbgPrint("o3ds-rec: ring buffer %lu KB\n", (unsigned long)(ringSize / 1024));
+	recLog("memory ok: ring %lu KB, total used %lu KB", (unsigned long)(ringSize / 1024),
+		(unsigned long)(plgGetMemoryUsage() / 1024));
 	return true;
 }
 
@@ -262,16 +296,21 @@ static bool ensureSd(void)
 
 static bool start(void)
 {
-	if (!ensureMemory() || !ensureSd())
+	if (!ensureSd())
 		return false;
-
 	FSUSER_CreateDirectory(sdmc, fsMakePath(PATH_ASCII, REC_DIR), 0); /* 既にあれば失敗するが問題ない */
+	recLog("start: SD ok (format %lu)", (unsigned long)lastFormat);
+	if (!ensureMemory())
+		return false;
 
 	startTick = svcGetSystemTick();
 	makeBaseName();
 	partNo = 1;
-	if (!openPart())
+	if (!openPart()) {
+		recLog("ERROR cannot open %s.3dr", baseName);
 		return false;
+	}
+	recLog("file %s.3dr opened", baseName);
 
 	rec_screen_init(&stTop, REC_SCREEN_TOP_LEFT, TOP_LINES, KEY_INTERVAL);
 	rec_screen_init(&stBot, REC_SCREEN_BOTTOM, BOT_LINES, KEY_INTERVAL);
@@ -297,6 +336,8 @@ static bool start(void)
 		writerThread = 0;
 		inlineWrite = true;
 	}
+	recLog(inlineWrite ? "writer: inline (%08lx)" : "writer: thread ok (%08lx)", (unsigned long)res);
+	logFrames = 1;
 
 	active = true;
 	nsDbgPrint("o3ds-rec: recording to %s.3dr\n", baseName);
@@ -332,6 +373,9 @@ void o3dsrecStop(void)
 		active = false;
 		nsDbgPrint("o3ds-rec: stopped (%lu frames, %lu dropped)\n",
 			(unsigned long)(stTop.frame_count + stBot.frame_count), (unsigned long)drops);
+		recLog("stopped: %lu frames, %lu dropped, %lu KB, writer %s",
+			(unsigned long)(stTop.frame_count + stBot.frame_count), (unsigned long)drops,
+			(unsigned long)(writePos / 1024), writerFailed ? "FAILED" : "ok");
 	}
 	startFailed = false;
 }
@@ -341,6 +385,7 @@ void o3dsrecFrame(const u8 *src, u32 format, u32 isTop)
 	if (!active) {
 		if (startFailed)
 			return;
+		lastFormat = format;
 		if (!start()) {
 			startFailed = true;
 			return;
@@ -379,6 +424,12 @@ void o3dsrecFrame(const u8 *src, u32 format, u32 isTop)
 		memcpy(ring, ring + ringSize, off + n - ringSize);
 
 	storeRel(&prodPos, pp + (u32)n);
+	u32 frames = stTop.frame_count + stBot.frame_count;
+	if (frames >= logFrames) {
+		recLog("frames %lu, dropped %lu, produced %lu KB, written %lu KB", (unsigned long)frames,
+			(unsigned long)drops, (unsigned long)(pp / 1024), (unsigned long)(loadAcq(&writePos) / 1024));
+		logFrames = logFrames < 300 ? logFrames * 10 : logFrames + 900;
+	}
 	if (inlineWrite) {
 		if (!flushBlocks())
 			writerFailed = 1;
