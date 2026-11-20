@@ -710,7 +710,8 @@ pub fn record_frame() -> Option<()> {
 
     unsafe {
         // The capture is a DMA into IMG_INFO; wait for it before reading the buffer.
-        let dma = *SCREEN_PARAMS.dmas.get_unchecked(EYE_LEFT).get(&WorkIndex::init(0));
+        let w = WorkIndex::init(0);
+        let dma = *SCREEN_PARAMS.dmas.get_unchecked(EYE_LEFT).get(&w);
         if dma != 0 {
             let mut tries = 0;
             loop {
@@ -726,7 +727,7 @@ pub fn record_frame() -> Option<()> {
             }
         }
 
-        let params = work_ready_params(&WorkIndex::init(0));
+        let params = work_ready_params(&w);
         o3dsrecFrame(img_info(), params.format & 0xf, params.is_top as u32);
     }
     Some(())
