@@ -1,0 +1,55 @@
+name: o3ds-rec
+# 旧3DS SD録画版（o3ds-rec）のビルドと配布。
+# o3ds-rec ブランチへの push ごとに BootNTRSelector を作り、Release に公開する。
+on:
+  push:
+    branches: [o3ds-rec]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: xzn92/ntr-hr-build-environment:2026-08-02
+    steps:
+      - name: Rust env
+        run: ln -s /root/.rustup ~/.rustup
+      - name: Clone repos
+        run: |
+          git clone --recurse-submodules --depth=1 -b ${{ github.ref_name }} https://github.com/${{ github.repository }} ntr-hr
+          git clone --recurse-submodules --depth=1 https://github.com/${{ github.repository_owner }}/BootNTR.git
+          ln -s BootNTR BootNTR-Bins
+      - name: Compile NTR-HR
+        run: |
+          cd ntr-hr
+          MAKEFLAGS="USE_CLANG=1 USE_LTO=1" ./make.sh install
+      - name: Compile BootNTR-HR
+        run: |
+          cd BootNTR-Bins
+          ./make.sh
+          ls -la output/3ds-arm
+      - name: Collect
+        run: |
+          mkdir dist
+          cp BootNTR-Bins/output/3ds-arm/*.3dsx dist/BootNTRSelector-o3ds-rec.3dsx
+          cp BootNTR-Bins/output/3ds-arm/BootNTRSelector-PabloMK7-Banner.cia dist/BootNTRSelector-o3ds-rec.cia
+          ls -la dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: o3ds-rec
+          path: dist/*
+          compression-level: 0
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: o3ds-rec-${{ github.run_number }}
+          name: NTR-HR o3ds-rec (build ${{ github.run_number }})
+          target_commitish: ${{ github.sha }}
+          make_latest: true
+          files: dist/*
+          body: |
+            旧3DS向け SD録画版 NTR-HR（o3ds-rec）。
+            BootNTRSelector-o3ds-rec.3dsx を SD の /3ds/ に置き、Homebrew Launcher から起動して NTR を読み込む。
+            使い方: https://github.com/noctis1008-wq/o3ds-rec
